@@ -144,10 +144,12 @@ def test_manifest_records_the_feed_actually_used(tmp_path, monkeypatch):
 
     monkeypatch.delenv("ALPACA_API_KEY_ID", raising=False)
     monkeypatch.delenv("ALPACA_API_SECRET_KEY", raising=False)
+    monkeypatch.setenv("PRICE_SOURCE", "alpaca")
     monkeypatch.setenv("ALPACA_FEED", "sip")
 
     from asetpay_snapshotter.capture import capture
 
     capture(tmp_path, date(2026, 8, 17), ["AAPL"])
     written = json.loads((tmp_path / "_manifest.json").read_text())
+    assert written["provider"].startswith("alpaca")
     assert written["parameters"]["feed"] == "sip"

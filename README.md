@@ -166,9 +166,14 @@ These need accounts or machines I do not have.
    ```bash
    gh repo create asetpay --private --source=. --push
    ```
-2. **P1-14b — free Alpaca paper account.** Put the keys in `.env` and in repo
-   secrets as `ALPACA_API_KEY_ID` / `ALPACA_API_SECRET_KEY`. This is your price
-   feed *and* your Phase 4 broker.
+2. **P1-14b — a price feed key.** The default source is Polygon's free
+   "Stocks Basic" tier: put `POLYGON_API_KEY` in `.env` and in repo secrets.
+
+   The feed and the broker are **separate decisions** and this repo no longer
+   couples them. See "Where prices come from" below. Alpaca remains a supported
+   source (`PRICE_SOURCE=alpaca`) and a candidate Phase 4 broker where residency
+   allows, but broker eligibility is jurisdictional and must never be allowed to
+   stop history accruing.
 3. **Validate the universe.** `universe.txt` is seeded with 502 S&P 500 names
    and decides what gets captured every night. Once the keys exist:
 
@@ -204,10 +209,10 @@ harness recovering planted alpha (already passing).
 packages/
   contracts/   Signal, AssetId, the four Protocols   — ZERO dependencies
   core/        synthetic, store, evaluation, signals
-  snapshotter/ daily capture, runs on GitHub Actions
+  snapshotter/ daily capture + the PriceSource implementations
 migrations/    Postgres schema with the exclusion constraints
 scripts/       feature purity checker, universe builder
-tests/         53 tests, incl. Gate 0, the four pathologies, and the CI gates
+tests/         65 tests, incl. Gate 0, the four pathologies, and the CI gates
 universe.txt   what the snapshotter captures. The most consequential file here
 uv.lock        committed — CI runs `--frozen` and fails without it
 ```
@@ -217,24 +222,73 @@ one resolver is a fight you lose repeatedly; each loss costs a day.
 
 ---
 
-## One caveat that governs everything downstream
+## Where prices come from
 
-The free Alpaca tier records the **IEX** feed. IEX is one venue carrying a few
-percent of consolidated US volume: prices are representative, **volume is not**.
+`packages/snapshotter/src/asetpay_snapshotter/sources.py`
 
-Anything computed from the volume column — ADV, dollar volume, the liquidity
-floor (P1-25), the per-name cost model (P1-23) — is measuring IEX participation
-rather than market liquidity, and understates costs in exactly the small caps
-where a naive backtest finds its most exciting fake results.
+The snapshotter was the only place in this codebase with a vendor name baked
+into it. It is now a `PriceSource` Protocol with implementations behind it,
+selected by `PRICE_SOURCE`, and the choice is recorded in every manifest.
 
-This does not block Phase 1. It blocks **Gate 2**, whose whole question is
-whether an agent survives realistic costs. Budget for a real volume source
-before P1-22, and treat P1-24's validation bands (2–6 bps large cap, 25–70 bps
-small cap) as the check that catches you if you forget.
+`PriceSource` is deliberately **not** in `contracts`. contracts is the
+coordination surface between the two rails and changing it needs both people in
+the room; P2 never touches the price feed, it reads the Store.
 
-Every manifest records the feed it used, so the day this changes is recoverable
-from the snapshots rather than from memory. Set `ALPACA_FEED=sip` when the
-subscription exists.
+| Source | Requests per night, 502 names | Volume | Free tier |
+|---|---|---|---|
+| **polygon** (default) | **1** — the whole US market | **consolidated** | grouped daily, end-of-day |
+| alpaca | 3 (chunked at 200) | IEX only | no per-symbol quota |
+
+The free-tier request maths is what decided this, and it is worth understanding
+before anyone changes it:
+
+- **polygon** returns every US ticker for a date in one call, so the response is
+  not filtered to `universe.txt` — it is not cheaper to ask for less, and the
+  universe you want in month six is not the one you can name in week one.
+  `universe.txt` becomes a coverage **floor** that gets checked rather than a
+  list that silently bounds what history exists.
+- **tiingo** is not implemented: one request per symbol against a free tier
+  metered in unique symbols per month does not fit a daily full-universe
+  capture, and you would discover that on night three.
+- **moomoo and IBKR** are not implemented, and should not be. Both need a
+  logged-in gateway daemon (OpenD, IB Gateway) alive on an ephemeral CI runner,
+  and moomoo meters historical candles by *account assets* — 100 per 7 days
+  below 10,000 HKD. These are execution venues, not research feeds.
+
+### Why the default is not a brokerage
+
+Alpaca was doing two unrelated jobs: the nightly research feed, and the Phase 4
+execution broker. Broker eligibility is jurisdictional. The feed has a clock on
+it. Coupling them means a residency question can stop history accruing, and that
+is the one loss this project cannot recover from.
+`test_the_default_source_is_not_a_brokerage` holds that seam open.
+
+### The volume caveat, now scoped
+
+IEX is one venue carrying a few percent of consolidated US volume: prices are
+representative, **volume is not**. Anything computed from the volume column —
+ADV, dollar volume, the liquidity floor (P1-25), the per-name cost model
+(P1-23) — measures venue participation rather than market liquidity, and
+understates costs in exactly the small caps where a naive backtest finds its
+most exciting fake results.
+
+On `polygon` this is **not** a live problem: grouped daily is consolidated. It
+returns if you switch to `alpaca` on the free tier. Either way the manifest
+records the provider, so the seam is visible in the data rather than remembered.
+Treat P1-24's bands (2–6 bps large cap, 25–70 bps small cap) as the check that
+catches you if this gets forgotten.
+
+### What every snapshot now records
+
+`provider`, the source's own `parameters`, and `universe_coverage` — the share
+of `universe.txt` that actually came back. Row count alone cannot distinguish a
+full market day from a response carrying ten thousand rows and none of the names
+you asked for, which is what a wrong date or a lapsed entitlement produces. A
+capture with rows but coverage below 90% is refused rather than published.
+
+`schema_version` is **2**: `vwap` and `trade_count` are now captured. Both are
+free from both providers, both are exactly what a per-name cost model wants, and
+neither can be bought back later.
 
 ---
 
