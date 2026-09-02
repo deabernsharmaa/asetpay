@@ -237,3 +237,61 @@ def test_event_date_comes_from_the_bar_not_the_label():
     as a mismatch instead of being relabelled to look correct."""
     ms = 1755388800000  # 2025-08-17T00:00:00Z
     assert sources._epoch_ms_to_date(ms) == "2025-08-17"
+
+
+# ------------------------------------- a number says something is wrong;
+# ------------------------------------- a list says what
+
+
+def test_the_manifest_names_the_missing_symbols():
+    """`coverage 0.996` sent a person off to work out which two names it was.
+    Recording them means the next person reads the answer instead."""
+    import tempfile
+    from pathlib import Path
+
+    class Stub:
+        provider = "stub"
+
+        def parameters(self):
+            return {}
+
+        def fetch(self, session, symbols):
+            return _frame(["AAPL", "MSFT"])
+
+    with tempfile.TemporaryDirectory() as d:
+        m = capture(Path(d), date(2026, 8, 17), ["AAPL", "MSFT", "BRK.B", "BF.B"], Stub())
+
+    assert m.missing_symbols == ["BF.B", "BRK.B"]
+    assert m.universe_coverage == 0.5
+
+
+def test_a_complete_response_records_no_missing_symbols():
+    """The control: a field that is never empty is not carrying information."""
+    from asetpay_snapshotter.capture import missing_from
+
+    assert missing_from(_frame(["AAPL", "MSFT"]), ["AAPL", "MSFT"]) == []
+
+
+def test_the_missing_list_is_capped():
+    """A genuinely broken night would otherwise write thousands of symbols into
+    every manifest. Twenty is enough to recognise the pattern."""
+    import tempfile
+    from pathlib import Path
+
+    from asetpay_snapshotter.capture import MAX_MISSING_RECORDED
+
+    class Stub:
+        provider = "stub"
+
+        def parameters(self):
+            return {}
+
+        def fetch(self, session, symbols):
+            return _frame([])
+
+    wanted = [f"SYM{i:04d}" for i in range(500)]
+    with tempfile.TemporaryDirectory() as d:
+        m = capture(Path(d), date(2026, 8, 17), wanted, Stub())
+
+    assert len(m.missing_symbols) == MAX_MISSING_RECORDED
+    assert m.universe_coverage == 0.0

@@ -212,7 +212,7 @@ packages/
   snapshotter/ daily capture + the PriceSource implementations
 migrations/    Postgres schema with the exclusion constraints
 scripts/       feature purity checker, universe builder
-tests/         69 tests, incl. Gate 0, the four pathologies, and the CI gates
+tests/         72 tests, incl. Gate 0, the four pathologies, and the CI gates
 universe.txt   what the snapshotter captures. The most consequential file here
 uv.lock        committed — CI runs `--frozen` and fails without it
 ```
@@ -307,8 +307,10 @@ never an overwrite.
 
 ### What every snapshot now records
 
-`provider`, the source's own `parameters`, and `universe_coverage` — the share
-of `universe.txt` that actually came back. Row count alone cannot distinguish a
+`provider`, the source's own `parameters`, `universe_coverage` — the share of
+`universe.txt` that actually came back — and `missing_symbols`, the names that
+did not. A coverage number tells you something is wrong; the list tells you
+what, and it survives in the manifest rather than having to be re-derived. Row count alone cannot distinguish a
 full market day from a response carrying ten thousand rows and none of the names
 you asked for, which is what a wrong date or a lapsed entitlement produces. A
 capture with rows but coverage below 90% is refused rather than published.

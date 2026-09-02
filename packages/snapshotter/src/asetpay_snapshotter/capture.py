@@ -82,6 +82,7 @@ class Manifest:
     parameters: dict[str, object]
     row_count: int
     universe_coverage: float
+    missing_symbols: list[str]
     checksum: str
     fetched_at: str
     schema_version: int
@@ -117,6 +118,24 @@ def previous_session(today: date | None = None) -> date:
     while d.weekday() >= 5:
         d = date.fromordinal(d.toordinal() - 1)
     return d
+
+
+# A coverage number tells you something is wrong. A list of names tells you
+# what. Capped because a genuinely broken night would otherwise write thousands
+# of symbols into every manifest, and the first twenty are enough to recognise
+# the pattern — a ticker convention mismatch, a halted name, a dead listing.
+MAX_MISSING_RECORDED = 20
+
+
+def missing_from(df: pd.DataFrame, symbols: list[str]) -> list[str]:
+    """Universe members the response did not contain.
+
+    Persisted in the manifest so the diagnosis survives the run. `coverage
+    0.996` sent someone to go and work out which two names it was; recording
+    them means the next person reads the answer instead of deriving it.
+    """
+    got = set(df["symbol"]) if len(df) else set()
+    return sorted(set(symbols) - got)
 
 
 def universe_coverage(df: pd.DataFrame, symbols: list[str]) -> float:
@@ -168,6 +187,7 @@ def capture(
     df.to_parquet(out_dir / "prices.parquet", index=False)
 
     coverage = universe_coverage(df, symbols)
+    missing = missing_from(df, symbols)
     m = Manifest(
         snapshot_id=started.strftime("%Y-%m-%dT%H:%M:%SZ"),
         knowledge_date=known_on.isoformat(),
@@ -176,6 +196,7 @@ def capture(
         parameters={**src.parameters(), "n_symbols_requested": len(symbols)},
         row_count=len(df),
         universe_coverage=round(coverage, 4),
+        missing_symbols=missing[:MAX_MISSING_RECORDED],
         checksum=f"sha256:{canonical_checksum(df)}",
         fetched_at=started.isoformat(),
         schema_version=SCHEMA_VERSION,
@@ -186,6 +207,14 @@ def capture(
         f"(known {m.knowledge_date}) from {m.provider} "
         f"(universe coverage {coverage:.1%}) -> {out_dir}"
     )
+    if missing:
+        shown = " ".join(missing[:MAX_MISSING_RECORDED])
+        more = (
+            f" (+{len(missing) - MAX_MISSING_RECORDED} more)"
+            if len(missing) > MAX_MISSING_RECORDED
+            else ""
+        )
+        print(f"  absent from the response: {shown}{more}")
     return m
 
 
