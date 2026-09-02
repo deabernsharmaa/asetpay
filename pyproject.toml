@@ -1,0 +1,62 @@
+[project]
+name = "asetpay"
+version = "0.1.0"
+description = "Point-in-time research and decision system"
+requires-python = ">=3.12"
+
+# The workspace root installs nothing itself. Each member declares its own
+# dependencies so the four environments stay separate — see README section 2.
+dependencies = []
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "hypothesis>=6.100",
+    "ruff>=0.6",
+    "mypy>=1.11",
+    "import-linter>=2.0",
+    "psycopg[binary]>=3.2",
+]
+
+[tool.uv.workspace]
+members = ["packages/*"]
+
+[tool.uv.sources]
+asetpay-contracts = { workspace = true }
+asetpay-core = { workspace = true }
+
+[tool.ruff]
+line-length = 95
+target-version = "py312"
+src = ["packages/contracts/src", "packages/core/src", "packages/snapshotter/src"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF", "ANN", "PTH"]
+ignore = ["ANN401", "B008"]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests and scripts are read top-to-bottom by humans; annotation and line-length
+# rules that pay for themselves in library code just add noise there.
+"tests/*" = ["ANN", "E501", "PTH"]
+"scripts/*" = ["E501"]
+
+[tool.mypy]
+python_version = "3.12"
+# Strict on the contract and the core. Deliberately NOT strict everywhere:
+# strictness in research code is a tax that gets paid in workarounds.
+files = ["packages/contracts/src", "packages/core/src"]
+strict = true
+warn_unreachable = true
+
+[[tool.mypy.overrides]]
+module = ["statsmodels.*", "pandas.*", "pyarrow.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = [
+    "packages/contracts/src",
+    "packages/core/src",
+    "packages/snapshotter/src",
+]
+filterwarnings = ["error::FutureWarning"]

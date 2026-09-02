@@ -1,0 +1,85 @@
+# P1-05 / P1-06 — the daily snapshot.
+#
+# This is the only genuinely time-sensitive thing in the project. On the free
+# data path, history not captured today cannot be bought back at any price. So
+# this runs on GitHub's schedule rather than a laptop: laptops sleep, travel and
+# run out of battery, and a missed night is permanent.
+#
+# Output goes to a dated GitHub RELEASE, not to Actions artifacts. Artifacts
+# expire after 90 days by default, which would silently destroy your history at
+# exactly the 90-day mark. Release assets do not expire and do not count against
+# repository size.
+#
+# 03:00 UTC rather than just after the US close: free-tier scheduled runs can be
+# delayed under load, and a delay must not push the job into the next session and
+# corrupt the knowledge_date label.
+
+name: snapshot
+
+on:
+  schedule:
+    - cron: "0 3 * * 2-6"   # Tue-Sat 03:00 UTC = post-close Mon-Fri US
+  workflow_dispatch:         # manual re-run to backfill a missed day
+    inputs:
+      knowledge_date:
+        description: "YYYY-MM-DD to capture (defaults to the previous session)"
+        required: false
+
+permissions:
+  contents: write            # needed to create releases
+
+concurrency:
+  group: snapshot
+  cancel-in-progress: false  # never cancel a capture in flight
+
+jobs:
+  capture:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install
+        run: uv sync --package asetpay-snapshotter --frozen
+
+      - name: Capture
+        env:
+          ALPACA_API_KEY_ID: ${{ secrets.ALPACA_API_KEY_ID }}
+          ALPACA_API_SECRET_KEY: ${{ secrets.ALPACA_API_SECRET_KEY }}
+          SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT }}
+        run: |
+          uv run python -m asetpay_snapshotter.capture \
+            --out ./out \
+            ${{ inputs.knowledge_date && format('--knowledge-date {0}', inputs.knowledge_date) || '' }}
+
+      - name: Read manifest
+        id: manifest
+        run: |
+          echo "kdate=$(jq -r .knowledge_date out/_manifest.json)" >> "$GITHUB_OUTPUT"
+          echo "rows=$(jq -r .row_count out/_manifest.json)"       >> "$GITHUB_OUTPUT"
+
+      # Fail loudly on an empty capture rather than publishing a release that
+      # looks fine and contains nothing. A silent empty day is worse than a
+      # visibly failed job, because nobody investigates a green tick.
+      - name: Refuse to publish an empty snapshot
+        run: |
+          test "${{ steps.manifest.outputs.rows }}" -gt 0 \
+            || { echo "::error::snapshot contained 0 rows"; exit 1; }
+
+      - name: Publish as a dated release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: snapshot-${{ steps.manifest.outputs.kdate }}
+          name: Snapshot ${{ steps.manifest.outputs.kdate }}
+          body: |
+            Immutable market-data capture.
+            knowledge_date: ${{ steps.manifest.outputs.kdate }}
+            rows: ${{ steps.manifest.outputs.rows }}
+          files: |
+            out/*.parquet
+            out/_manifest.json
+          fail_on_unmatched_files: true

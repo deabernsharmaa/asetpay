@@ -1,0 +1,19 @@
+[project]
+name = "asetpay-contracts"
+version = "0.1.0"
+description = "The coordination surface: Signal, Store, FeatureSet, CostModel"
+requires-python = ">=3.12"
+
+# INTENTIONALLY EMPTY AND MUST STAY THAT WAY.
+# Every environment depends on this package. One third-party entry here forces
+# the models environment (torch) to agree with the backtest environment
+# (nautilus_trader) about that library's version. Enforced by
+# tests/test_contracts_zero_deps.py.
+dependencies = []
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/asetpay_contracts"]

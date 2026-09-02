@@ -1,0 +1,95 @@
+# P1-06b — the watchdog on the snapshot job.
+#
+# GitHub disables scheduled workflows after 60 days of repository inactivity.
+# During active development you will never hit that. During a quiet stretch — an
+# exam period, a holiday, a month spent on the AsetPay side — the snapshotter
+# stops SILENTLY, which is precisely the unrecoverable failure mode that matters
+# most here. A green dashboard nobody looks at will not tell you.
+#
+# So: a second job that checks the freshness of the newest snapshot release and
+# opens a GitHub Issue if it has gone stale. Issues email you for free, which
+# makes this a real alert rather than another thing to remember to check.
+#
+# Note this workflow is itself subject to the same 60-day rule. That is fine and
+# is the point of belt-and-braces: it is far less likely that BOTH stop unnoticed
+# than that one does, and the repo activity from either running resets the clock.
+
+name: gap-detector
+
+on:
+  schedule:
+    - cron: "30 12 * * *"   # daily, well after the capture window
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check snapshot freshness
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          latest=$(gh release list --repo "$GITHUB_REPOSITORY" --limit 50 \
+                     --json tagName,createdAt \
+                   | jq -r '[.[] | select(.tagName | startswith("snapshot-"))]
+                            | sort_by(.createdAt) | last | .createdAt // empty')
+
+          if [ -z "$latest" ]; then
+            echo "stale=true"      >> "$GITHUB_OUTPUT"
+            echo "age=never"       >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          age=$(( ( $(date +%s) - $(date -d "$latest" +%s) ) / 86400 ))
+          echo "age=$age days" >> "$GITHUB_OUTPUT"
+          # 3 days tolerates a weekend plus one delayed run.
+          if [ "$age" -gt 3 ]; then
+            echo "stale=true"  >> "$GITHUB_OUTPUT"
+          else
+            echo "stale=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Open an issue if snapshots have stopped
+        if: steps.check.outputs.stale == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Do not spam: reuse the open issue if one already exists.
+          existing=$(gh issue list --repo "$GITHUB_REPOSITORY" \
+                       --label snapshot-gap --state open --json number \
+                     | jq -r '.[0].number // empty')
+
+          body=$(cat <<'EOF'
+          The most recent snapshot release is older than the freshness threshold.
+
+          **Every missed day is permanently lost** — on the free data path,
+          history not captured cannot be bought back later.
+
+          Most likely cause, in order:
+
+          1. **GitHub disabled the scheduled workflow** after 60 days of
+             repository inactivity. Re-enable it under Actions -> snapshot.
+          2. Alpaca credentials expired or the secret was rotated.
+          3. The capture job is failing — check the last few runs.
+
+          After fixing, backfill each missed day with
+          `workflow_dispatch` on the `snapshot` workflow, passing
+          `knowledge_date`.
+          EOF
+          )
+
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --repo "$GITHUB_REPOSITORY" \
+              --body "Still stale (age: ${{ steps.check.outputs.age }})."
+          else
+            gh issue create --repo "$GITHUB_REPOSITORY" \
+              --title "Snapshot gap: no capture in ${{ steps.check.outputs.age }}" \
+              --label snapshot-gap \
+              --body "$body"
+          fi

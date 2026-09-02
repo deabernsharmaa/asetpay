@@ -1,0 +1,61 @@
+# J-05 — CI. Four checks, three of which enforce an architectural invariant
+# rather than a style preference.
+
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: asetpay_test
+        options: >-
+          --health-cmd pg_isready --health-interval 10s
+          --health-timeout 5s --health-retries 5
+        ports: ["5432:5432"]
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - run: uv sync --all-packages --frozen
+
+      - name: Lint and format
+        run: |
+          uv run ruff check .
+          uv run ruff format --check .
+
+      - name: Types (strict on contracts and core)
+        run: uv run mypy
+
+      # The three architectural gates. Each replaces a rule somebody would
+      # otherwise have to remember at 2am in month seven.
+      - name: Contract stays dependency-free
+        run: uv run pytest tests/test_contracts_zero_deps.py -q
+
+      - name: Import boundaries hold
+        run: uv run lint-imports
+
+      - name: Feature purity
+        run: uv run python scripts/check_feature_purity.py
+
+      - name: Tests
+        env:
+          ASETPAY_TEST_DSN: postgresql://postgres:postgres@localhost:5432/asetpay_test
+        run: uv run pytest -q

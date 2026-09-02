@@ -1,0 +1,22 @@
+# P1-13 — architectural rules enforced in CI, not in code review.
+[importlinter]
+root_packages =
+    asetpay_contracts
+    asetpay_core
+include_external_packages = True
+
+[importlinter:contract:1]
+name = contracts depends on nothing
+type = forbidden
+source_modules = asetpay_contracts
+forbidden_modules = asetpay_core, pandas, numpy, pydantic, statsmodels
+
+[importlinter:contract:2]
+# The store module is the ONLY place raw files may be read. One chokepoint, one
+# place lookahead can enter, one place to audit.
+name = only the store reads raw data files
+type = forbidden
+source_modules =
+    asetpay_core.evaluation
+    asetpay_core.signals
+forbidden_modules = duckdb
