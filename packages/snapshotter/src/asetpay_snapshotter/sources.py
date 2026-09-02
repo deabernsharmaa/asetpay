@@ -58,7 +58,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Sequence
-from datetime import date
+from datetime import UTC, date, datetime
 from typing import Protocol, runtime_checkable
 
 import pandas as pd
@@ -94,6 +94,16 @@ def empty_frame() -> pd.DataFrame:
     return pd.DataFrame(columns=COLUMNS)
 
 
+def _epoch_ms_to_date(ms: int) -> str:
+    """Bar timestamp -> ISO event date, in UTC.
+
+    US daily bars are stamped at 00:00 ET of the session, which is the same
+    calendar day in UTC. Kept as a named function so that the day a non-US
+    venue arrives, this is the one place the assumption is written down.
+    """
+    return datetime.fromtimestamp(ms / 1000, tz=UTC).date().isoformat()
+
+
 @runtime_checkable
 class PriceSource(Protocol):
     """One session of daily bars, from somewhere."""
@@ -108,8 +118,12 @@ class PriceSource(Protocol):
         """Vendor-specific settings that affect what the numbers mean."""
         ...
 
-    def fetch(self, knowledge_date: date, symbols: Sequence[str]) -> pd.DataFrame:
-        """Bars for one session, with exactly `COLUMNS`.
+    def fetch(self, session: date, symbols: Sequence[str]) -> pd.DataFrame:
+        """Bars for one trading session, with exactly `COLUMNS`.
+
+        `session` is the EVENT date — the day the trading happened. It is not
+        the knowledge date; see capture.py for why those must not be the same
+        value.
 
         `symbols` is the universe of interest. A source that can cheaply return
         MORE than that should do so — breadth captured tonight is breadth you
@@ -148,7 +162,7 @@ class PolygonSource:
     def parameters(self) -> dict[str, object]:
         return {"timeframe": "1Day", "adjusted": False, "scope": "all_us_stocks"}
 
-    def fetch(self, knowledge_date: date, symbols: Sequence[str]) -> pd.DataFrame:
+    def fetch(self, session: date, symbols: Sequence[str]) -> pd.DataFrame:
         key = os.environ.get("POLYGON_API_KEY")
         if not key:
             print("POLYGON_API_KEY absent — emitting an empty frame")
@@ -156,15 +170,19 @@ class PolygonSource:
 
         import httpx
 
-        url = f"{self.BASE}/{knowledge_date.isoformat()}"
+        url = f"{self.BASE}/{session.isoformat()}"
         with httpx.Client(timeout=120.0) as client:
             r = client.get(url, params={"adjusted": "false", "apiKey": key})
             r.raise_for_status()
             body = r.json()
 
+        # `t` is the bar's own session timestamp in epoch ms UTC. Taking the
+        # date from the DATA rather than from the label means a response for the
+        # wrong day is visible as a mismatch instead of being relabelled to look
+        # correct.
         rows = [
             {
-                "event_date": knowledge_date.isoformat(),
+                "event_date": _epoch_ms_to_date(b["t"]),
                 "symbol": b["T"],
                 "open": b.get("o"),
                 "high": b.get("h"),
@@ -205,7 +223,7 @@ class AlpacaSource:
     def parameters(self) -> dict[str, object]:
         return {"timeframe": "1Day", "feed": self.feed(), "scope": "universe"}
 
-    def fetch(self, knowledge_date: date, symbols: Sequence[str]) -> pd.DataFrame:
+    def fetch(self, session: date, symbols: Sequence[str]) -> pd.DataFrame:
         key = os.environ.get("ALPACA_API_KEY_ID")
         secret = os.environ.get("ALPACA_API_SECRET_KEY")
         if not key or not secret:
@@ -214,7 +232,7 @@ class AlpacaSource:
 
         import httpx
 
-        day = knowledge_date.isoformat()
+        day = session.isoformat()
         rows: list[dict[str, object]] = []
         with httpx.Client(timeout=60.0) as client:
             for i in range(0, len(symbols), self.CHUNK):

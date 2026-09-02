@@ -21,8 +21,8 @@ on:
     - cron: "0 3 * * 2-6"   # Tue-Sat 03:00 UTC = post-close Mon-Fri US
   workflow_dispatch:         # manual re-run to backfill a missed day
     inputs:
-      knowledge_date:
-        description: "YYYY-MM-DD to capture (defaults to the previous session)"
+      session:
+        description: "trading day to capture, YYYY-MM-DD (defaults to the previous session)"
         required: false
 
 permissions:
@@ -59,12 +59,13 @@ jobs:
         run: |
           uv run python -m asetpay_snapshotter.capture \
             --out ./out \
-            ${{ inputs.knowledge_date && format('--knowledge-date {0}', inputs.knowledge_date) || '' }}
+            ${{ inputs.session && format('--session {0}', inputs.session) || '' }}
 
       - name: Read manifest
         id: manifest
         run: |
           echo "kdate=$(jq -r .knowledge_date out/_manifest.json)"     >> "$GITHUB_OUTPUT"
+          echo "session=$(jq -r .session out/_manifest.json)"          >> "$GITHUB_OUTPUT"
           echo "rows=$(jq -r .row_count out/_manifest.json)"           >> "$GITHUB_OUTPUT"
           echo "prov=$(jq -r .provider out/_manifest.json)"            >> "$GITHUB_OUTPUT"
           echo "cov=$(jq -r .universe_coverage out/_manifest.json)"    >> "$GITHUB_OUTPUT"
@@ -77,16 +78,32 @@ jobs:
           test "${{ steps.manifest.outputs.rows }}" -gt 0 \
             || { echo "::error::snapshot contained 0 rows"; exit 1; }
 
+      # IMMUTABLE means immutable. action-gh-release happily UPDATES an existing
+      # release, which would silently rewrite a day of history and leave no
+      # trace — the one thing the point-in-time store cannot survive. So a
+      # re-capture of a session that already has a release is a hard stop, and
+      # the operator decides what to do about it.
+      - name: Refuse to overwrite an existing session
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="snapshot-${{ steps.manifest.outputs.session }}"
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "::error::$tag already exists. A correction is a NEW snapshot, never an overwrite."
+            exit 1
+          fi
+
       - name: Publish as a dated release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: snapshot-${{ steps.manifest.outputs.kdate }}
-          name: Snapshot ${{ steps.manifest.outputs.kdate }}
+          tag_name: snapshot-${{ steps.manifest.outputs.session }}
+          name: Snapshot ${{ steps.manifest.outputs.session }}
           body: |
             Immutable market-data capture.
-            knowledge_date: ${{ steps.manifest.outputs.kdate }}
-            provider: ${{ steps.manifest.outputs.prov }}
-            rows: ${{ steps.manifest.outputs.rows }}
+            session:           ${{ steps.manifest.outputs.session }}
+            knowledge_date:    ${{ steps.manifest.outputs.kdate }}
+            provider:          ${{ steps.manifest.outputs.prov }}
+            rows:              ${{ steps.manifest.outputs.rows }}
             universe_coverage: ${{ steps.manifest.outputs.cov }}
           files: |
             out/*.parquet

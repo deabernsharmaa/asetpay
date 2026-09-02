@@ -21,6 +21,23 @@ Three properties matter more than the fetching:
               a history assembled from both is fine, but only if the seam is
               visible. See sources.py.
 
+TWO DATES, NEVER ONE
+--------------------
+`event_date` is when the trading happened. `knowledge_date` is when WE could
+first have known about it. They are different, and collapsing them is the
+lookahead this whole project exists to prevent.
+
+The capture runs at 03:00 UTC on Wednesday and fetches Tuesday's session. Nobody
+possessed Tuesday's closing price at any point during Tuesday. Stamping those
+rows `knowledge_date = Tuesday` would make `as_of(Tuesday)` hand a strategy a
+number that did not exist yet — a few hours of lookahead, applied uniformly, in
+the direction that flatters every backtest.
+
+So `event_date` comes from the bar itself and `knowledge_date` is the date the
+capture ran. `as_of(Tuesday)` therefore cannot see Tuesday's close, and the
+one-day trade lag stops being a convention someone has to remember. It is the
+same reasoning as the GiST exclusion constraints: structural, not disciplinary.
+
 The checksum is computed over canonically sorted, canonically typed rows so that
 re-running on identical input produces an identical digest. That determinism is
 tested (P1-08) because without it `features_hash` downstream becomes unstable,
@@ -40,10 +57,12 @@ import pandas as pd
 
 from asetpay_snapshotter.sources import PriceSource, get_source
 
-# 2: added vwap and trade_count, and made the source pluggable. Bumped rather
+# 2: added vwap and trade_count, and made the source pluggable.
+# 3: knowledge_date is the capture date, not the session date. Bumped rather
 # than edited in place — a reader of an old snapshot must be able to tell which
-# shape they are holding without inspecting the columns.
-SCHEMA_VERSION = 2
+# shape they are holding, and this change alters what the rows MEAN, which is
+# the version bump that matters most.
+SCHEMA_VERSION = 3
 
 # Below this share of the requested universe, the capture is treated as a failed
 # fetch rather than a quiet day. Individual names halt, get acquired, or stop
@@ -57,7 +76,8 @@ class Manifest:
     """What was captured, from where, and proof it is intact."""
 
     snapshot_id: str
-    knowledge_date: str
+    knowledge_date: str  # when we could first have known this
+    session: str  # when the trading actually happened
     provider: str
     parameters: dict[str, object]
     row_count: int
@@ -114,27 +134,44 @@ def universe_coverage(df: pd.DataFrame, symbols: list[str]) -> float:
 
 def capture(
     out_dir: Path,
-    knowledge_date: date,
+    session: date,
     symbols: list[str],
     source: PriceSource | None = None,
+    knowledge_date: date | None = None,
 ) -> Manifest:
+    """Capture one trading `session`, as known on `knowledge_date`.
+
+    `knowledge_date` defaults to today (UTC), which is the honest answer when
+    the job is running now. It is an argument rather than a constant so that a
+    backfill can state plainly when the data became knowable, instead of
+    pretending the backfill happened years ago.
+    """
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     src = source or get_source()
 
     started = datetime.now(tz=UTC)
-    df = src.fetch(knowledge_date, symbols)
+    known_on = knowledge_date or started.date()
+    if known_on < session:
+        raise SystemExit(
+            f"knowledge_date {known_on} precedes the session {session} it describes. "
+            "That is lookahead by construction; refusing to write it."
+        )
 
-    # The knowledge_date is stamped on every row. It is the axis the whole
-    # point-in-time store is partitioned by, so it is never inferred later.
+    df = src.fetch(session, symbols)
+
+    # knowledge_date is the axis the point-in-time store partitions by, and it
+    # is stamped here rather than inferred later from a filename. event_date
+    # came from the bar itself, in sources.py.
     df = df.copy()
-    df["knowledge_date"] = knowledge_date.isoformat()
+    df["knowledge_date"] = known_on.isoformat()
     df.to_parquet(out_dir / "prices.parquet", index=False)
 
     coverage = universe_coverage(df, symbols)
     m = Manifest(
         snapshot_id=started.strftime("%Y-%m-%dT%H:%M:%SZ"),
-        knowledge_date=knowledge_date.isoformat(),
+        knowledge_date=known_on.isoformat(),
+        session=session.isoformat(),
         provider=src.provider,
         parameters={**src.parameters(), "n_symbols_requested": len(symbols)},
         row_count=len(df),
@@ -145,7 +182,8 @@ def capture(
     )
     m.write(out_dir / "_manifest.json")
     print(
-        f"captured {m.row_count} rows for {m.knowledge_date} from {m.provider} "
+        f"captured {m.row_count} rows for session {m.session} "
+        f"(known {m.knowledge_date}) from {m.provider} "
         f"(universe coverage {coverage:.1%}) -> {out_dir}"
     )
     return m
@@ -154,7 +192,18 @@ def capture(
 def main() -> int:
     p = argparse.ArgumentParser(description="Daily immutable market-data capture")
     p.add_argument("--out", type=Path, default=Path("out"))
-    p.add_argument("--knowledge-date", type=date.fromisoformat, default=None)
+    p.add_argument(
+        "--session",
+        type=date.fromisoformat,
+        default=None,
+        help="trading day to capture; defaults to the previous weekday",
+    )
+    p.add_argument(
+        "--knowledge-date",
+        type=date.fromisoformat,
+        default=None,
+        help="when this became knowable; defaults to today. Only set it for backfills",
+    )
     p.add_argument(
         "--source",
         default=None,
@@ -182,7 +231,13 @@ def main() -> int:
     if not symbols:
         raise SystemExit(f"universe file is empty: {a.symbols_file}")
 
-    m = capture(a.out, a.knowledge_date or previous_session(), symbols, get_source(a.source))
+    m = capture(
+        a.out,
+        a.session or previous_session(),
+        symbols,
+        get_source(a.source),
+        a.knowledge_date,
+    )
 
     # A capture that returned rows but missed most of the universe is a failed
     # fetch wearing a successful one's clothes. Fail here rather than publish it.

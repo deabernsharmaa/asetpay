@@ -66,6 +66,7 @@ def test_capture_writes_a_complete_manifest(tmp_path, monkeypatch) -> None:
     for field in (
         "snapshot_id",
         "knowledge_date",
+        "session",
         "provider",
         "parameters",
         "row_count",
@@ -75,7 +76,10 @@ def test_capture_writes_a_complete_manifest(tmp_path, monkeypatch) -> None:
     ):
         assert field in written, f"manifest is missing {field}"
 
-    assert written["knowledge_date"] == "2026-08-17"
+    # The session is what was asked for; the knowledge date is when we asked.
+    # They are deliberately different — see the capture module docstring.
+    assert written["session"] == "2026-08-17"
+    assert written["knowledge_date"] >= written["session"]
     assert written["checksum"].startswith("sha256:")
     assert m.schema_version >= 1
     assert (tmp_path / "prices.parquet").exists()
@@ -85,11 +89,11 @@ def test_every_row_carries_the_knowledge_date(tmp_path, monkeypatch) -> None:
     """knowledge_date is the axis the point-in-time store partitions by. It is
     stamped at capture time and never inferred later from a filename."""
     monkeypatch.delenv("ALPACA_API_KEY_ID", raising=False)
-    capture(tmp_path, date(2026, 8, 17), ["AAPL"])
+    capture(tmp_path, date(2026, 8, 17), ["AAPL"], knowledge_date=date(2026, 8, 18))
     df = pd.read_parquet(tmp_path / "prices.parquet")
     assert "knowledge_date" in df.columns
     if len(df):
-        assert (df["knowledge_date"] == "2026-08-17").all()
+        assert (df["knowledge_date"] == "2026-08-18").all()
 
 
 def test_previous_session_skips_the_weekend() -> None:

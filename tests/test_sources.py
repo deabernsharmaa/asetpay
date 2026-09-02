@@ -146,3 +146,94 @@ def test_the_coverage_floor_tolerates_halts_but_not_a_truncated_session():
     """Names halt, get acquired and stop trading, so the floor is not 100%. A
     truncated response looks nothing like a few halts."""
     assert 0.5 < MIN_UNIVERSE_COVERAGE < 1.0
+
+
+# -------------------------------------------------- two dates, never one
+
+
+def test_knowledge_date_defaults_to_today_not_the_session():
+    """Nobody had Tuesday's close during Tuesday. Stamping those rows
+    knowledge_date=Tuesday makes as_of(Tuesday) hand a strategy a number that
+    did not exist yet — a few hours of lookahead, applied uniformly, in the
+    direction that flatters every backtest."""
+    import tempfile
+    from datetime import UTC, datetime
+    from pathlib import Path
+
+    class Stub:
+        provider = "stub"
+
+        def parameters(self):
+            return {}
+
+        def fetch(self, session, symbols):
+            return _frame(["AAPL"])
+
+    session = date(2026, 8, 17)
+    with tempfile.TemporaryDirectory() as d:
+        m = capture(Path(d), session, ["AAPL"], Stub())
+
+    assert m.session == "2026-08-17"
+    assert m.knowledge_date == datetime.now(tz=UTC).date().isoformat()
+    assert m.knowledge_date != m.session
+
+
+def test_a_knowledge_date_before_its_session_is_refused():
+    """The negative control. Claiming to have known Tuesday's close on Monday
+    is lookahead by construction, so it is rejected rather than written."""
+    import tempfile
+    from pathlib import Path
+
+    class Stub:
+        provider = "stub"
+
+        def parameters(self):
+            return {}
+
+        def fetch(self, session, symbols):
+            return _frame(["AAPL"])
+
+    with tempfile.TemporaryDirectory() as d, pytest.raises(SystemExit) as e:
+        capture(
+            Path(d),
+            date(2026, 8, 18),
+            ["AAPL"],
+            Stub(),
+            knowledge_date=date(2026, 8, 17),
+        )
+    assert "lookahead" in str(e.value)
+
+
+def test_a_backfill_can_state_when_the_data_became_knowable():
+    """A backfill run today must not pretend it happened years ago, but it also
+    must not claim today's knowledge for a decade-old session. The date is an
+    argument precisely so the honest answer can be written down."""
+    import tempfile
+    from pathlib import Path
+
+    class Stub:
+        provider = "stub"
+
+        def parameters(self):
+            return {}
+
+        def fetch(self, session, symbols):
+            return _frame(["AAPL"])
+
+    with tempfile.TemporaryDirectory() as d:
+        m = capture(
+            Path(d),
+            date(2020, 3, 16),
+            ["AAPL"],
+            Stub(),
+            knowledge_date=date(2020, 3, 17),
+        )
+    assert m.session == "2020-03-16"
+    assert m.knowledge_date == "2020-03-17"
+
+
+def test_event_date_comes_from_the_bar_not_the_label():
+    """Taking the date from the DATA means a response for the wrong day shows up
+    as a mismatch instead of being relabelled to look correct."""
+    ms = 1755388800000  # 2025-08-17T00:00:00Z
+    assert sources._epoch_ms_to_date(ms) == "2025-08-17"

@@ -212,7 +212,7 @@ packages/
   snapshotter/ daily capture + the PriceSource implementations
 migrations/    Postgres schema with the exclusion constraints
 scripts/       feature purity checker, universe builder
-tests/         65 tests, incl. Gate 0, the four pathologies, and the CI gates
+tests/         69 tests, incl. Gate 0, the four pathologies, and the CI gates
 universe.txt   what the snapshotter captures. The most consequential file here
 uv.lock        committed — CI runs `--frozen` and fails without it
 ```
@@ -278,6 +278,33 @@ records the provider, so the seam is visible in the data rather than remembered.
 Treat P1-24's bands (2–6 bps large cap, 25–70 bps small cap) as the check that
 catches you if this gets forgotten.
 
+### Two dates, never one
+
+`event_date` is when the trading happened. `knowledge_date` is when we could
+first have known about it. Collapsing them is the lookahead this project exists
+to prevent.
+
+The job runs 03:00 UTC Wednesday and captures Tuesday's session. Nobody
+possessed Tuesday's closing price at any point during Tuesday, so stamping those
+rows `knowledge_date = Tuesday` would make `as_of(Tuesday)` hand a strategy a
+number that did not exist yet — a few hours of lookahead, applied uniformly, in
+the direction that flatters every backtest.
+
+So `event_date` comes from the bar's own timestamp and `knowledge_date` is the
+date the capture ran. `as_of(Tuesday)` cannot see Tuesday's close, and the
+one-day trade lag stops being a convention someone has to remember. Same
+reasoning as the GiST exclusion constraints: structural, not disciplinary.
+
+A `knowledge_date` earlier than the session it describes is refused outright.
+Backfills pass `--knowledge-date` explicitly, so a historical load states when
+the data actually became knowable rather than claiming today's knowledge for a
+decade-old session.
+
+Releases are tagged by **session**, and the workflow refuses to publish over an
+existing tag. `action-gh-release` will happily update a release in place, which
+would rewrite a day of history leaving no trace. A correction is a new snapshot,
+never an overwrite.
+
 ### What every snapshot now records
 
 `provider`, the source's own `parameters`, and `universe_coverage` — the share
@@ -286,7 +313,7 @@ full market day from a response carrying ten thousand rows and none of the names
 you asked for, which is what a wrong date or a lapsed entitlement produces. A
 capture with rows but coverage below 90% is refused rather than published.
 
-`schema_version` is **2**: `vwap` and `trade_count` are now captured. Both are
+`schema_version` is **3**: `vwap` and `trade_count` are now captured. Both are
 free from both providers, both are exactly what a per-name cost model wants, and
 neither can be bought back later.
 
