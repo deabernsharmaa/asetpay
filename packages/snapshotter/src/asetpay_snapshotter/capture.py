@@ -81,7 +81,9 @@ class Manifest:
     provider: str
     parameters: dict[str, object]
     row_count: int
-    universe_coverage: float
+    universe_size: int  # every name ever, including delisted
+    expected_trading: int  # those that should appear on this session
+    universe_coverage: float  # measured against expected_trading, not universe_size
     missing_symbols: list[str]
     checksum: str
     fetched_at: str
@@ -118,6 +120,40 @@ def previous_session(today: date | None = None) -> date:
     while d.weekday() >= 5:
         d = date.fromordinal(d.toordinal() - 1)
     return d
+
+
+def read_delistings(path: Path) -> dict[str, date]:
+    """symbol -> last trading date, from `universe_delisted.txt`.
+
+    Comment and blank lines ignored; the third field is a human-readable reason
+    that nothing parses and everything benefits from.
+    """
+    if not path.exists():
+        return {}
+    out: dict[str, date] = {}
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = [f.strip() for f in line.split(",", 2)]
+        if len(parts) < 2:
+            raise SystemExit(f"malformed line in {path}: {line!r}")
+        out[parts[0]] = date.fromisoformat(parts[1])
+    return out
+
+
+def expected_trading(
+    symbols: list[str], delisted: dict[str, date], session: date
+) -> list[str]:
+    """The universe members that should actually appear on this session.
+
+    A name is expected until its last trading day, inclusive, and never after.
+    Measuring coverage against the full universe instead would make it decay
+    with every corporate action — AvalonBay and Equity Residential merging into
+    VMRK cost 0.4% on the first live capture — until the floor trips for reasons
+    that are not failures at all.
+    """
+    return [s for s in symbols if s not in delisted or session <= delisted[s]]
 
 
 # A coverage number tells you something is wrong. A list of names tells you
@@ -157,6 +193,7 @@ def capture(
     symbols: list[str],
     source: PriceSource | None = None,
     knowledge_date: date | None = None,
+    delisted: dict[str, date] | None = None,
 ) -> Manifest:
     """Capture one trading `session`, as known on `knowledge_date`.
 
@@ -177,6 +214,7 @@ def capture(
             "That is lookahead by construction; refusing to write it."
         )
 
+    expected = expected_trading(symbols, delisted or {}, session)
     df = src.fetch(session, symbols)
 
     # knowledge_date is the axis the point-in-time store partitions by, and it
@@ -186,8 +224,8 @@ def capture(
     df["knowledge_date"] = known_on.isoformat()
     df.to_parquet(out_dir / "prices.parquet", index=False)
 
-    coverage = universe_coverage(df, symbols)
-    missing = missing_from(df, symbols)
+    coverage = universe_coverage(df, expected)
+    missing = missing_from(df, expected)
     m = Manifest(
         snapshot_id=started.strftime("%Y-%m-%dT%H:%M:%SZ"),
         knowledge_date=known_on.isoformat(),
@@ -195,6 +233,8 @@ def capture(
         provider=src.provider,
         parameters={**src.parameters(), "n_symbols_requested": len(symbols)},
         row_count=len(df),
+        universe_size=len(symbols),
+        expected_trading=len(expected),
         universe_coverage=round(coverage, 4),
         missing_symbols=missing[:MAX_MISSING_RECORDED],
         checksum=f"sha256:{canonical_checksum(df)}",
@@ -244,6 +284,12 @@ def main() -> int:
         default=Path("universe.txt"),
         help="one symbol per line; the working universe until P1-15 lands",
     )
+    p.add_argument(
+        "--delisted-file",
+        type=Path,
+        default=Path("universe_delisted.txt"),
+        help="symbol,last_trading_date,reason — excluded from the coverage denominator",
+    )
     a = p.parse_args()
 
     # No fallback universe. A default of three symbols would publish a release
@@ -266,6 +312,7 @@ def main() -> int:
         symbols,
         get_source(a.source),
         a.knowledge_date,
+        read_delistings(a.delisted_file),
     )
 
     # A capture that returned rows but missed most of the universe is a failed

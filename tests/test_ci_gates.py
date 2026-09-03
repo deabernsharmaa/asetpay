@@ -153,3 +153,76 @@ def test_manifest_records_the_feed_actually_used(tmp_path, monkeypatch):
     written = json.loads((tmp_path / "_manifest.json").read_text())
     assert written["provider"].startswith("alpaca")
     assert written["parameters"]["feed"] == "sip"
+
+
+# ------------------------------------------- delistings and the coverage floor
+
+
+DELISTED = ROOT / "universe_delisted.txt"
+
+
+def test_delisted_names_stay_in_the_universe():
+    """Additive only. A delisted name dropped from universe.txt is the first
+    move of survivorship bias — the pathology truth.json plants a trap for."""
+    from asetpay_snapshotter.capture import read_delistings
+
+    universe = set(UNIVERSE.read_text().split())
+    for symbol in read_delistings(DELISTED):
+        assert symbol in universe, f"{symbol} was delisted AND removed from the universe"
+
+
+def test_every_delisting_names_its_successor_or_reason():
+    """A delisting with no recorded reason is indistinguishable from a typo
+    somebody quietly deleted."""
+    for line in DELISTED.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = line.split(",", 2)
+        assert len(parts) == 3, f"no reason recorded: {line!r}"
+        assert parts[2].strip(), f"empty reason: {line!r}"
+
+
+def test_coverage_is_measured_against_names_expected_to_trade():
+    """The AvalonBay/Equity Residential merger cost 0.4% of coverage on the
+    first live capture. Measured against the full universe, coverage decays
+    with every corporate action until the floor trips for reasons that are not
+    failures — and the 2am fix is to lower the floor, which disables the check.
+    """
+    from datetime import date
+
+    from asetpay_snapshotter.capture import expected_trading
+
+    universe = ["AAPL", "AVB", "EQR", "VMRK"]
+    delisted = {"AVB": date(2026, 8, 17), "EQR": date(2026, 8, 17)}
+
+    # On its last trading day the name is still expected.
+    assert expected_trading(universe, delisted, date(2026, 8, 17)) == universe
+    # The day after, it is not.
+    assert expected_trading(universe, delisted, date(2026, 8, 18)) == ["AAPL", "VMRK"]
+    # Long before, it is.
+    assert expected_trading(universe, delisted, date(2020, 1, 2)) == universe
+
+
+def test_the_delisted_file_parses():
+    """It is read by the nightly job. A malformed line must fail here, not at
+    03:00 UTC."""
+    from asetpay_snapshotter.capture import read_delistings
+
+    assert read_delistings(DELISTED), "expected at least one recorded delisting"
+
+
+def test_a_malformed_delisting_line_is_refused(tmp_path):
+    from asetpay_snapshotter.capture import read_delistings
+
+    bad = tmp_path / "d.txt"
+    bad.write_text("AVB\n")
+    with pytest.raises(SystemExit):
+        read_delistings(bad)
+
+
+def test_a_missing_delisted_file_is_not_an_error(tmp_path):
+    """Nothing has delisted yet is a legitimate state for a new universe."""
+    from asetpay_snapshotter.capture import read_delistings
+
+    assert read_delistings(tmp_path / "nope.txt") == {}

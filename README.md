@@ -212,8 +212,9 @@ packages/
   snapshotter/ daily capture + the PriceSource implementations
 migrations/    Postgres schema with the exclusion constraints
 scripts/       feature purity checker, universe builder
-tests/         72 tests, incl. Gate 0, the four pathologies, and the CI gates
-universe.txt   what the snapshotter captures. The most consequential file here
+tests/         78 tests, incl. Gate 0, the four pathologies, and the CI gates
+universe.txt   every name ever in scope — additive, never pruned
+universe_delisted.txt  what has stopped trading, and when
 uv.lock        committed — CI runs `--frozen` and fails without it
 ```
 
@@ -307,10 +308,25 @@ never an overwrite.
 
 ### What every snapshot now records
 
-`provider`, the source's own `parameters`, `universe_coverage` — the share of
-`universe.txt` that actually came back — and `missing_symbols`, the names that
-did not. A coverage number tells you something is wrong; the list tells you
-what, and it survives in the manifest rather than having to be re-derived. Row count alone cannot distinguish a
+`provider`, the source's own `parameters`, `universe_size`, `expected_trading`,
+`universe_coverage` and `missing_symbols`.
+
+Coverage is measured against the names **expected to trade on that session**,
+not against the whole universe. `universe.txt` is additive — a delisted name is
+never removed, because its history stays in scope — so `universe_delisted.txt`
+records what has stopped trading and when, and coverage uses the difference.
+
+Without that split, coverage decays a little with every corporate action until
+it trips the 90% floor for reasons that are not failures. The first live capture
+came back at 0.996 because AvalonBay and Equity Residential had merged into
+VMRK two weeks earlier. The fix somebody reaches for at 2am is lowering the
+floor, which disables the check entirely. `universe_delisted.txt` is the interim
+form of `universe_exclusions` and `delisting_returns` (P1-15, P1-17); when those
+tables land, this file is their seed.
+
+`missing_symbols` names what did not arrive. A coverage number tells you
+something is wrong; the list tells you what, and it survives in the manifest
+rather than having to be re-derived from the parquet. Row count alone cannot distinguish a
 full market day from a response carrying ten thousand rows and none of the names
 you asked for, which is what a wrong date or a lapsed entitlement produces. A
 capture with rows but coverage below 90% is refused rather than published.

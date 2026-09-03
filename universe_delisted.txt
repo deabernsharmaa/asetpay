@@ -1,0 +1,18 @@
+# Names that have stopped trading, and when.
+#
+# universe.txt is ADDITIVE — a delisted name is never removed from it, because
+# its history stays in scope and dropping it is the first move of survivorship
+# bias. But a name that no longer trades must not be counted against the daily
+# coverage check either, or coverage decays a little with every corporate
+# action until it trips the floor for entirely benign reasons — and the fix
+# someone reaches for at 2am is lowering the floor, which disables the check.
+#
+# So: universe.txt is every name ever. This file says which of them are no
+# longer expected to appear. Coverage is measured against the difference.
+#
+# This is the interim form of universe_exclusions / delisting_returns
+# (P1-15, P1-17). When those tables land, this file is their seed.
+#
+# symbol,last_trading_date,reason
+AVB,2026-08-17,merged into VMRK (AvalonBay/Equity Residential merger of equals; 2.793 EQR shares per AVB share)
+EQR,2026-08-17,renamed and retickered to VMRK (Vivmark Residential)
